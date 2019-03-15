@@ -1,0 +1,8 @@
+import(penaltyLearning)
+import(slurm)
+import(DBI)
+import(RPostgres)
+import(batchtools)
+import(PeakSegDisk)
+import(data.table)
+exportPattern("^[[:alpha:]]+")

@@ -1,0 +1,40 @@
+PeakSegPath
+
+Functions for computing the whole path of [[https://github.com/tdhock/PeakSegDisk][PeakSegDisk]] models on a
+cluster (currently only SLURM).
+
+** Usage (experimental)
+
+First install all R pkg dependencies, and then setup a ~/.batchtools.conf
+file:
+
+#+BEGIN_SRC R
+slurm.tmpl <- system.file(
+  "templates", "slurm-afterok.tmpl",
+  package="PeakSegPipeline",
+  mustWork=TRUE)
+cluster.functions <- makeClusterFunctionsSlurm(slurm.tmpl)
+#+END_SRC
+
+Then setup your database config file:
+
+#+BEGIN_SRC shell-script
+export PGDATABASE=thocking_db
+export PGHOST=cedar-pgsql-vm
+#+END_SRC
+
+Then run PeakSegPath::initProblems() to initialize the postgres
+database tables.
+
+Then run the following on the directory that contains a labels.bed
+file and a coverage.bedGraph file:
+
+#+BEGIN_SRC R
+PeakSegPath::startPath("path/to/data/dir")
+#+END_SRC
+
+By default it will launch 1002 PeakSegDisk jobs, one for each
+different penalty parameter. At the end of each run it will save the
+results to the postgres database, then remove the PeakSegDisk files,
+then launch a bunch more jobs that are guaranteed to make progress
+toward computing the full path of models.

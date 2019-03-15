@@ -1,0 +1,8 @@
+Package: PeakSegPath
+Maintainer: Toby Dylan Hocking <toby.hocking@r-project.org>
+Author: Toby Dylan Hocking
+Version: 2019.03.14
+License: GPL-3
+Title: Compute full path of changepoint models on cluster.
+Description: Uses batchtools to compute the full path in parallel.
+Imports: batchtools, PeakSegDisk, data.table, DBI, RPostgres, slurm, penaltyLearning

@@ -5,17 +5,27 @@ now <- function(){
 startPath <- structure(function
 (prob.dir,
   n.penalties=1000,
-  penalty.vec=exp(c(-Inf, seq(-15, 15, l=n.penalties), Inf))
+  penalty.vec=exp(c(-Inf, Inf, sample(seq(-15, 15, l=n.penalties)))),
+  ...
 ){
-  submitPenalties(prob.dir, penalty.vec)
+  submitPenalties(prob.dir, penalty.vec, ...)
 }, ex=function(){
+  prob.dir <- "/scratch/thocking/uci-chipseq-data/H3K27ac-H3K4me3_TDHAM_BP/samples/GR3_H3K4me3/S00K4G_WTSI/problems/chr3:60000-66170270"
   prob.dir <- "/scratch/thocking/uci-chipseq-data/ATAC_JV_adipose/samples/AC1/MSC77/problems/chr10:18024675-38818835"
-  prob.dir <- "~/scratch/uci-chipseq-data/H3K27ac-H3K4me3_TDHAM_BP/samples/GR3_H3K4me3/S00K4G_WTSI/problems/chr3:60000-66170270"
-  startPath(prob.dir, 2)
+  PeakSegPath::startPath(prob.dir)
+  prob.dir.vec <- Sys.glob("/scratch/thocking/uci-chipseq-data/H3K27ac-H3K4me3_TDHAM_BP/samples/GR3_H3K4me3/*/problems/chr3:60000-66170270")
+  prob.dir <- prob.dir.vec[3]
+  for(prob.dir in prob.dir.vec){
+    PeakSegPath::submitNewPenalties(prob.dir)
+  }
+  some.dir.vec <- grep("K4G|NBR", prob.dir.vec, value=TRUE, invert=TRUE)
+  for(prob.dir in prob.dir.vec){
+    PeakSegPath::startPath(prob.dir, seconds.per.penalty=60)
+  }
 })
 
 getProbSuffix <- function(prob.dir){
-  sub(".*uci-chipseq-data/", "", prob.dir)
+  sub(".*uci-chipseq-data/", "", normalizePath(prob.dir, mustWork=TRUE))
 }
 
 initProblems <- function(){
@@ -45,6 +55,9 @@ initProblems <- function(){
   oneTransaction(function(con){
     dbSendClear(con, 'create index on problems_loss ("prob.id")')
     dbSendClear(con, 'alter table problems_loss add constraint loss_pen_prob_unique unique ("pen.str", "prob.id")')
+    dbSendClear(con, 'alter table problems_loss alter "total.loss" type double precision')
+    dbSendClear(con, 'alter table problems_loss alter "mean.pen.cost" type double precision')
+    dbSendClear(con, 'alter table problems_loss alter "penalty" type double precision')
     dbSendClear(con, 'create index on problems_computing ("prob.id")')
     dbSendClear(con, 'alter table problems_computing add constraint comp_pen_prob_unique unique ("pen.str", "prob.id")')
   })
@@ -98,8 +111,17 @@ submitPenalties <- function
     memory = 1000,#megabytes per cpu
     ncpus=1,
     ntasks=1,
-    chunks.as.arrayjobs=TRUE)
+    chunks.as.arrayjobs=TRUE),
+  seconds.per.penalty=res.list$walltime
 ){
+  coverage.bedGraph.gz <- file.path(prob.dir, "coverage.bedGraph.gz")
+  coverage.bedGraph <- file.path(prob.dir, "coverage.bedGraph")
+  if(file.exists(coverage.bedGraph.gz)){
+    system(paste("gunzip", coverage.bedGraph.gz))
+  }
+  if(!file.exists(coverage.bedGraph)){
+    stop(coverage.bedGraph, " does not exist")
+  }
   reg.dir <- file.path(
     prob.dir,
     "PeakSegPath",
@@ -107,21 +129,49 @@ submitPenalties <- function
   dir.create(dirname(reg.dir), recursive=TRUE, showWarnings=FALSE)
   reg <- batchtools::makeRegistry(reg.dir)
   pen.str.vec <- paste(pen.vec)
-  batchtools::batchMap(function(pen.str, prob.dir){
+  penalties.per.job <- ceiling(res.list$walltime / seconds.per.penalty / 2)  
+  n.jobs <- length(pen.str.vec) / penalties.per.job
+  job.vec <- 1:n.jobs
+  pen.dt <- data.table(
+    pen.str=pen.str.vec,
+    job.id=rep(job.vec, l=length(pen.str.vec)))
+  batchtools::batchMap(function(job.id, prob.dir, pen.dt){
     ## Need PeakSegPath:: because this fun will be executed later by a
     ## worker node/batchtools.
-    PeakSegPath::onePenDB(prob.dir, pen.str)
+    select.dt <- data.table(job.id)
+    job.penalties <- pen.dt[select.dt, on=list(job.id)]
+    for(penalty.i in 1:nrow(job.penalties)){
+      pen.str <- job.penalties[penalty.i, pen.str]
+      cat(sprintf("%4d / %4d penalty=%s\n", penalty.i, nrow(job.penalties), pen.str))
+      PeakSegPath::onePenDB(prob.dir, pen.str)
+    }
     PeakSegPath::submitNewPenalties(prob.dir)
-  }, pen.str.vec, reg=reg, more.args=list(prob.dir=prob.dir))
+  }, job.vec, reg=reg, more.args=list(
+    pen.dt=pen.dt,
+    prob.dir=prob.dir))
   jt <- batchtools::getJobTable(reg=reg)
   chunks <- data.table(jt, chunk=(1:nrow(jt)) %/% max.tasks.per.array)
   batchtools::submitJobs(chunks, resources=res.list, reg=reg)
-  after <- batchtools::getJobTable(reg=reg)
+  after <- batchtools::getJobTable(reg=reg)[, .(job.id, batch.id)]
+  job.vec <- namedCapture::str_match_variable(after$batch.id, 
+    job="[0-9]+", 
+    "_")[, "job"]
+  sacct.dt <- data.table()
+  do.print <- TRUE
+  while(nrow(sacct.dt) < nrow(after)){
+    sacct.dt <- sacct.jobs(job.vec)
+    if(do.print){
+      cat("some jobs still not in sacct\n")
+      print(sacct.dt)
+    }
+    do.print <- TRUE
+    Sys.sleep(1)
+  }
+  join.dt <- pen.dt[after, on=list(job.id)]
   prob.id <- getProbID(prob.dir)
   data.table(
     prob.id,
-    pen.str=pen.str.vec,
-    job.id=after$batch.id,
+    join.dt[, .(pen.str, job.id=batch.id)],
     time.started=-1,
     max.job.seconds=res.list$walltime)
 }
@@ -148,19 +198,15 @@ set "time.started"=$1
 where "prob.id"=$2 and "pen.str"=$3
 ', params=list(now(), prob.id, pen.str))
   })
-  coverage.bedGraph.gz <- file.path(prob.dir, "coverage.bedGraph.gz")
-  if(file.exists(coverage.bedGraph.gz)){
-    system(paste("gunzip", coverage.bedGraph.gz))
-  }
   fit <- PeakSegDisk::problem.PeakSegFPOP(prob.dir, paste(pen.str))
-  ord.segs <- fit$segments[order(chromStart)]
+  ord.segs <- fit$segments[.N:1]
   diff.vec <- diff(ord.segs$mean)
   ord.segs[, diff.after  := c(diff.vec, Inf)]
   ord.segs[, diff.before := c(-Inf, diff.vec)]
   change.before.and.after <- ord.segs[diff.before != 0 & diff.after != 0]
   bkg <- change.before.and.after[status=="background"]
   start.end <- function(dt){
-    dt[status=="peak", .(chromStart, chromEnd)]
+    dt[status=="peak", data.table(chromStart, chromEnd)]
   }
   peak.list <- list(
     use=start.end(ord.segs),
@@ -178,7 +224,13 @@ where "prob.id"=$2 and "pen.str"=$3
     fit$loss)    
   for(rule in names(peak.list)){
     peak.dt <- peak.list[[rule]]
-    error.df <- PeakError::PeakErrorChrom(peak.dt, labels.dt)
+    error.df <- tryCatch({
+      PeakError::PeakErrorChrom(peak.dt, labels.dt)
+    }, error=function(e){
+      print(e)#typically peak bases not increasing, weird bug in solver.
+      cat("error in PeakErrorChrom, returning NA\n")
+      data.frame(fp=NA_integer_, fn=NA_integer_)
+    })
     error.vec <- with(error.df, c(
       errors=sum(fp+fn),
       fp=sum(fp),
@@ -189,8 +241,13 @@ where "prob.id"=$2 and "pen.str"=$3
     }
   }
   loss.dt[, mean.intervals := as.numeric(mean.intervals)]
-  oneTransaction(function(con){
-    DBI::dbWriteTable(con, "problems_loss", loss.dt, append=TRUE, row.names=FALSE)
+  tryCatch({
+    oneTransaction(function(con){
+      DBI::dbWriteTable(con, "problems_loss", loss.dt, append=TRUE, row.names=FALSE)
+    })
+  }, error=function(e){
+    print(e)
+    cat("error writing loss\n")
   })
   to.delete <- file.path(
     prob.dir,
@@ -201,50 +258,140 @@ where "prob.id"=$2 and "pen.str"=$3
   unlink(to.delete)
 }
 
-submitNewPenalties <- function(prob.dir){
+sacct.jobs <- function(job.vec){
+  u.vec <- unique(job.vec)
+  jobs <- paste(u.vec, collapse=",")
+  job.arg <- paste0("-j", jobs)
+  tryCatch({
+    slurm::sacct(job.arg)
+  }, error=function(e){
+    print(e)
+    print(prob.dir)
+    cat(sprintf(
+      "slurm::sacct('%s') errored so assuming jobs are still working.\n",
+      job.arg))
+    data.table()
+  })
+}
+
+### return either NULL (if there are no new penalties, or if writing
+### to problems_computing failed due to unique constraint -- another
+### process already wrote the same value) or a list of arguments to
+### pass to submitPenalties (new penalties that are reserved but not
+### yet submitted).
+reservePenalties <- function(prob.dir){
   prob.id <- getProbID(prob.dir)
-  oneTransaction(function(con){
-    computing.dt <- data.table(DBI::dbGetQuery(con, '
+  tryCatch({
+    oneTransaction(function(con){
+      ##browser()
+      computing.dt <- data.table(DBI::dbGetQuery(con, '
 select "pen.str", "job.id", "time.started", "max.job.seconds"
 from problems_computing
 where "prob.id"=$1
 ', params=list(prob.id)))
-    computing.dt[, started := 0 < time.started]
-    computing.dt[, running := started & (now() < time.started+max.job.seconds)]
-    check.dt <- computing.dt[running==FALSE]
-    pen.not.completed <- c(computing.dt[running==TRUE, pen.str], if(nrow(check.dt)){
-      job.dt <- namedCapture::df_match_variable(check.dt, job.id=list(
-        job="[0-9]+", as.integer,
-        "_",
-        task="[0-9]+", as.integer))
-      job.vec <- unique(job.dt$job.id.job)
-      jobs <- paste(job.vec, collapse=",")
-      job.arg <- paste0("-j", jobs)
-      sacct.dt <- tryCatch({
-        slurm::sacct(job.arg)
-      }, error=function(e){
-        cat("slurm un-available so assuming jobs are still working.\n")
-        data.table()
-      })
-      if(nrow(sacct.dt)){
+      computing.dt[, started := 0 < time.started]
+      computing.dt[, running := started & (now() < time.started+max.job.seconds)]
+      check.dt <- computing.dt[running==FALSE]
+      pen.not.completed <- c(computing.dt[running==TRUE, pen.str], if(nrow(check.dt)){
+        job.dt <- namedCapture::df_match_variable(check.dt, job.id=list(
+          job="[0-9]+", as.integer,
+          "_",
+          task="[0-9]+", as.integer))
+        sacct.dt <- sacct.jobs(job.dt$job.id.job)
+        if(nrow(sacct.dt)==0){
+          sacct.dt <- data.table(
+            JobID.job=integer(),
+            task=integer(),
+            State_blank=character())
+        }
         join.dt <- sacct.dt[job.dt, on=list(JobID.job=job.id.job, task=job.id.task)]
-        completed <- join.dt[State_blank=="COMPLETED"]
+        ## State_blank could be FAILED NODE_FAIL   TIMEOUT COMPLETED
+        is.complete <- join.dt[, !State_blank %in% c("RUNNING", "PENDING")]
+        completed <- join.dt[is.complete]
         if(nrow(completed)){
           print(completed)
           cat("deleting stale jobs from problems_computing table.\n")
           dbSendClear(con, '
 delete from problems_computing
 where "prob.id"=$1 and "pen.str"=$2
-', params=list(prob.id, completed$pen.str))
+', params=list(rep(prob.id, nrow(completed)), completed$pen.str))
         }
-        join.dt[State_blank!="COMPLETED", pen.str]
-      }
-    })
-    loss.dt <- data.table(DBI::dbGetQuery(con, '
-select "time.computed", "total.loss", "peaks"
+        join.dt[!is.complete, pen.str]
+      })
+      loss.dt <- data.table(DBI::dbGetQuery(con, '
+select "time.computed", "total.loss", "peaks", "seconds", "pen.str"
 from problems_loss
 where "prob.id"=$1
 ', params=list(prob.id)))
+      (loss.inc <- loss.dt[, list(
+        total.loss=total.loss[which.min(time.computed)]
+      ), by=list(peaks)][order(peaks)])
+      loss.inc[, cummin := cummin(total.loss)]
+      loss.min <- loss.inc[total.loss==cummin]
+      path.dt <- data.table(penaltyLearning::modelSelection(
+        loss.min, "total.loss", "peaks"))
+      cat(sprintf(
+        "penalties=%d peaks=%d selected=%d computing=%d incomplete=%d\n",
+        nrow(loss.dt), nrow(loss.inc), nrow(path.dt), nrow(computing.dt), length(pen.not.completed)))
+      path.dt[, max.computed := max.lambda %in% loss.dt$pen.str]
+      path.dt[, no.next := c(diff(peaks) == -1, NA)]
+      path.dt[, done := max.computed | no.next]
+      ##print(path.dt[, table(max.computed, no.next)])
+      new.pen.vec <- unique(paste(path.dt[done==FALSE, max.lambda]))
+      candidate.pen.vec <- new.pen.vec[!new.pen.vec %in% pen.not.completed]
+      if(0 < length(candidate.pen.vec)){
+        candidate.dt <- data.table(
+          prob.id,
+          pen.str=candidate.pen.vec,
+          job.id="NONE",
+          time.started=-1,
+          max.job.seconds=-1)
+        print(candidate.dt)
+        DBI::dbWriteTable(
+          con, "problems_computing", candidate.dt,
+          append=TRUE, row.names=FALSE)
+        list(prob.dir=prob.dir, pen.vec=candidate.pen.vec, seconds.per.penalty=mean(loss.dt$seconds))
+      }else{
+        cat("no candidate penalties\n")
+      }
+    })
+  }, error=function(e){
+    print(e)
+    cat("error in reservePenalties\n")
+    NULL
+  })
+}
+
+stopComputing <- function(){
+  system("psql -c 'delete from problems_computing'")
+  system("squeue -u thocking|sed 's/ .*//'|xargs scancel")
+}
+
+submitNewPenalties <- function(prob.dir){
+  submit.list <- reservePenalties(prob.dir)
+  if(is.list(submit.list)){
+    cat("submitting", length(submit.list$pen.vec), "new penalties\n")
+    submitted.dt <- do.call(submitPenalties, submit.list)
+    params.list <- with(submitted.dt, list(
+      job.id, max.job.seconds, prob.id, pen.str))
+    oneTransaction(function(con){
+      dbSendClear(con, '
+update problems_computing
+set "job.id"=$1, "max.job.seconds"=$2
+where "prob.id"=$3 and "pen.str"=$4
+', params=params.list)
+    })
+  }
+}
+
+getPath <- function(prob.dir){
+  prob.id <- getProbID(prob.dir)
+  oneTransaction(function(con){
+    loss.dt <- data.table(DBI::dbGetQuery(con, '
+select "time.computed", "total.loss", "peaks", "seconds", "pen.str", penalty, "remove.errors"
+from problems_loss
+where "prob.id"=$1
+', params=list(prob.id)))[order(-penalty)]
     (loss.inc <- loss.dt[, list(
       total.loss=total.loss[which.min(time.computed)]
     ), by=list(peaks)][order(peaks)])
@@ -252,18 +399,12 @@ where "prob.id"=$1
     loss.min <- loss.inc[total.loss==cummin]
     path.dt <- data.table(penaltyLearning::modelSelection(
       loss.min, "total.loss", "peaks"))
-    path.dt[, max.computed := max.lambda %in% loss.dt$penalty]
+    cat(sprintf(
+      "penalties=%d peaks=%d selected=%d\n",
+      nrow(loss.dt), nrow(loss.inc), nrow(path.dt)))
+    path.dt[, max.computed := max.lambda %in% loss.dt$pen.str]
     path.dt[, no.next := c(diff(peaks) == -1, NA)]
     path.dt[, done := max.computed | no.next]
-    new.pen.vec <- path.dt[done==FALSE, max.lambda]
-    candidate.pen.vec <- new.pen.vec[!new.pen.vec %in% pen.not.completed]
-    if(0 < length(candidate.pen.vec)){
-      submitted.dt <- submitPenalties(prob.dir, candidate.pen.vec)
-      DBI::dbWriteTable(
-        con, "problems_computing", submitted.dt,
-        append=TRUE, row.names=FALSE)
-    }
-    cat("submitted", length(candidate.pen.vec), "new penalties\n")
+    list(loss=loss.dt, path=path.dt)
   })
 }
-

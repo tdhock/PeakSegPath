@@ -330,15 +330,17 @@ where "prob.id"=$1
       loss.min <- loss.inc[total.loss==cummin]
       path.dt <- data.table(penaltyLearning::modelSelection(
         loss.min, "total.loss", "peaks"))
-      cat(sprintf(
-        "penalties=%d peaks=%d selected=%d computing=%d incomplete=%d\n",
-        nrow(loss.dt), nrow(loss.inc), nrow(path.dt), nrow(computing.dt), length(pen.not.completed)))
       path.dt[, max.computed := max.lambda %in% loss.dt$pen.str]
       path.dt[, no.next := c(diff(peaks) == -1, NA)]
       path.dt[, done := max.computed | no.next]
       ##print(path.dt[, table(max.computed, no.next)])
       new.pen.vec <- unique(paste(path.dt[done==FALSE, max.lambda]))
       candidate.pen.vec <- new.pen.vec[!new.pen.vec %in% pen.not.completed]
+      all.done <- nrow(computing.dt)==0 && length(candidate.pen.vec)==0
+      cat(sprintf(
+        "penalties=%d peaks=%d selected=%d computing=%d incomplete=%d candidates=%d done=%d\n",
+        nrow(loss.dt), nrow(loss.inc), nrow(path.dt), nrow(computing.dt), length(pen.not.completed),
+        length(candidate.pen.vec), all.done))
       if(0 < length(candidate.pen.vec)){
         candidate.dt <- data.table(
           prob.id,
@@ -352,7 +354,7 @@ where "prob.id"=$1
           append=TRUE, row.names=FALSE)
         list(prob.dir=prob.dir, pen.vec=candidate.pen.vec, seconds.per.penalty=mean(loss.dt$seconds))
       }else{
-        cat("no candidate penalties\n")
+        ##cat("no candidate penalties\n")
       }
     })
   }, error=function(e){

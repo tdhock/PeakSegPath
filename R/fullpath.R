@@ -122,10 +122,12 @@ submitPenalties <- function
   if(!file.exists(coverage.bedGraph)){
     stop(coverage.bedGraph, " does not exist")
   }
+  reg.time <- sub(" ", "-", Sys.time())
+  ## TODO store reg.time in problems_computing.
   reg.dir <- file.path(
     prob.dir,
     "PeakSegPath",
-    sub(" ", "-", Sys.time()))
+    reg.time)
   dir.create(dirname(reg.dir), recursive=TRUE, showWarnings=FALSE)
   reg <- batchtools::makeRegistry(reg.dir)
   pen.str.vec <- paste(pen.vec)
@@ -341,6 +343,11 @@ where "prob.id"=$1
         "penalties=%d peaks=%d selected=%d computing=%d incomplete=%d candidates=%d done=%d\n",
         nrow(loss.dt), nrow(loss.inc), nrow(path.dt), nrow(computing.dt), length(pen.not.completed),
         length(candidate.pen.vec), all.done))
+      PeakSegPath.registry.dir <- file.path(prob.dir, "PeakSegPath")
+      if(all.done && dir.exists(PeakSegPath.registry.dir)){
+        cat("deleting registry directory", PeakSegPath.registry.dir, "\n")
+        unlink(PeakSegPath.registry.dir, recursive=TRUE)
+      }
       if(0 < length(candidate.pen.vec)){
         candidate.dt <- data.table(
           prob.id,

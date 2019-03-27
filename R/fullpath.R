@@ -123,7 +123,11 @@ submitPenalties <- function
     stop(coverage.bedGraph, " does not exist")
   }
   reg.time <- sub(" ", "-", Sys.time())
-  ## TODO store reg.time in problems_computing.
+  ## TODO store reg.time in problems_computing, and setJobNames(ids,
+  ## names, reg=reg) so that we can easily find the log file
+  ## e.g. /scratch/thocking/uci-chipseq-data/ATAC_JV_adipose/samples/AC1/MSC77/problems/chr10:18024675-38818835/PeakSegPath/2019-03-24-00:38:45/logs/job76eac4dd1fe02ca6d66f9a4613f5b6be.log_101
+  ## (or just store that log file in the db, probly more convenient
+  ## but less space efficient)
   reg.dir <- file.path(
     prob.dir,
     "PeakSegPath",

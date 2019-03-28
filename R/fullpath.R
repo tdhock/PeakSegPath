@@ -20,7 +20,7 @@ startPath <- structure(function
   }
   some.dir.vec <- grep("K4G|NBR", prob.dir.vec, value=TRUE, invert=TRUE)
   for(prob.dir in prob.dir.vec){
-    PeakSegPath::startPath(prob.dir, seconds.per.penalty=60)
+    PeakSegPath::startPath(prob.dir, seconds.per.penalty=600)
   }
 })
 
@@ -135,7 +135,7 @@ submitPenalties <- function
   dir.create(dirname(reg.dir), recursive=TRUE, showWarnings=FALSE)
   reg <- batchtools::makeRegistry(reg.dir)
   pen.str.vec <- paste(pen.vec)
-  penalties.per.job <- ceiling(res.list$walltime / seconds.per.penalty / 2)  
+  penalties.per.job <- ceiling(res.list$walltime / seconds.per.penalty)  
   n.jobs <- length(pen.str.vec) / penalties.per.job
   job.vec <- 1:n.jobs
   pen.dt <- data.table(
@@ -363,7 +363,10 @@ where "prob.id"=$1
         DBI::dbWriteTable(
           con, "problems_computing", candidate.dt,
           append=TRUE, row.names=FALSE)
-        list(prob.dir=prob.dir, pen.vec=candidate.pen.vec, seconds.per.penalty=mean(loss.dt$seconds))
+        list(
+          prob.dir=prob.dir,
+          pen.vec=candidate.pen.vec,
+          seconds.per.penalty=mean(loss.dt$seconds)*10)
       }else{
         ##cat("no candidate penalties\n")
       }

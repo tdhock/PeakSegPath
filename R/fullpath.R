@@ -53,19 +53,14 @@ initProblems <- function(){
   })
   onePenDB(prob.dir, pen.str)#creates problems_loss table in DB.
   oneTransaction(function(con){
-    dbSendClear(con, 'create index on problems_loss ("prob.id")')
-    dbSendClear(con, 'alter table problems_loss add constraint loss_pen_prob_unique unique ("pen.str", "prob.id")')
-    dbSendClear(con, 'alter table problems_loss alter "total.loss" type double precision')
-    dbSendClear(con, 'alter table problems_loss alter "mean.pen.cost" type double precision')
-    dbSendClear(con, 'alter table problems_loss alter "penalty" type double precision')
-    dbSendClear(con, 'create index on problems_computing ("prob.id")')
-    dbSendClear(con, 'alter table problems_computing add constraint comp_pen_prob_unique unique ("pen.str", "prob.id")')
+    DBI::dbExecute(con, 'create index on problems_loss ("prob.id")')
+    DBI::dbExecute(con, 'alter table problems_loss add constraint loss_pen_prob_unique unique ("pen.str", "prob.id")')
+    DBI::dbExecute(con, 'alter table problems_loss alter "total.loss" type double precision')
+    DBI::dbExecute(con, 'alter table problems_loss alter "mean.pen.cost" type double precision')
+    DBI::dbExecute(con, 'alter table problems_loss alter "penalty" type double precision')
+    DBI::dbExecute(con, 'create index on problems_computing ("prob.id")')
+    DBI::dbExecute(con, 'alter table problems_computing add constraint comp_pen_prob_unique unique ("pen.str", "prob.id")')
   })
-}
-
-dbSendClear <- function(...){
-  res <- DBI::dbSendQuery(...)
-  DBI::dbClearResult(res)
 }
 
 oneTransaction <- function
@@ -75,13 +70,12 @@ oneTransaction <- function
 ### the database that were present at function definition (this does
 ### not work with expressions).
 (fun,
-### expression containing "con" database connection object, which will
-### be evaluated after creating a connection.
+### database connection object
   drv=RPostgres::Postgres(),
 ### database driver to pass to dbConnect.
   sleep.seconds=10
 ### seconds to wait if dbConnect fails (typically because there are
-### already too many connections.
+### already too many connections).
 ){
   con <- NULL
   while(is.null(con)){
@@ -93,7 +87,11 @@ oneTransaction <- function
       Sys.sleep(sleep.seconds)
     })
   }
-  DBI::dbWithTransaction(con, fun(con))
+  myfun <- function(con){
+    DBI::dbExecute(con, 'set transaction isolation level serializable')
+    fun(con)
+  }
+  DBI::dbWithTransaction(con, myfun(con))
 }
 
 ## This object is created at build time.
@@ -107,7 +105,7 @@ submitPenalties <- function
   pen.vec,
   max.tasks.per.array=9999,
   res.list=list(
-    walltime = 8*60*60,#seconds
+    walltime = 24*60*60,#seconds
     memory = 1000,#megabytes per cpu
     ncpus=1,
     ntasks=1,
@@ -158,7 +156,7 @@ submitPenalties <- function
   jt <- batchtools::getJobTable(reg=reg)
   chunks <- data.table(jt, chunk=(1:nrow(jt)) %/% max.tasks.per.array)
   batchtools::submitJobs(chunks, resources=res.list, reg=reg)
-  after <- batchtools::getJobTable(reg=reg)[, .(job.id, batch.id)]
+  after <- batchtools::getJobTable(reg=reg)
   job.vec <- namedCapture::str_match_variable(after$batch.id, 
     job="[0-9]+", 
     "_")[, "job"]
@@ -177,7 +175,9 @@ submitPenalties <- function
   prob.id <- getProbID(prob.dir)
   data.table(
     prob.id,
-    join.dt[, .(pen.str, job.id=batch.id)],
+    join.dt[, .(log.file=file.path(
+      prob.dir, "PeakSegPath", reg.time, "logs", log.file),
+      pen.str, job.id=batch.id)],
     time.started=-1,
     max.job.seconds=res.list$walltime)
 }
@@ -191,14 +191,14 @@ onePenDB <- function(prob.dir, pen.str){
   prob.id <- getProbID(prob.dir)
   on.exit({#in case of error exit:
     oneTransaction(function(con){
-      dbSendClear(con, '
+      DBI::dbExecute(con, '
 delete from problems_computing
 where "prob.id"=$1 and "pen.str"=$2
 ', params=list(prob.id, pen.str))
     })
   })
   oneTransaction(function(con){
-    dbSendClear(con, '
+    DBI::dbExecute(con, '
 update problems_computing
 set "time.started"=$1
 where "prob.id"=$2 and "pen.str"=$3
@@ -317,7 +317,7 @@ where "prob.id"=$1
         if(nrow(completed)){
           print(completed)
           cat("deleting stale jobs from problems_computing table.\n")
-          dbSendClear(con, '
+          DBI::dbExecute(con, '
 delete from problems_computing
 where "prob.id"=$1 and "pen.str"=$2
 ', params=list(rep(prob.id, nrow(completed)), completed$pen.str))
@@ -391,7 +391,7 @@ submitNewPenalties <- function(prob.dir){
     params.list <- with(submitted.dt, list(
       job.id, max.job.seconds, prob.id, pen.str))
     oneTransaction(function(con){
-      dbSendClear(con, '
+      DBI::dbExecute(con, '
 update problems_computing
 set "job.id"=$1, "max.job.seconds"=$2
 where "prob.id"=$3 and "pen.str"=$4

@@ -3,6 +3,16 @@ PeakSegPath
 Functions for computing the whole path of [[https://github.com/tdhock/PeakSegDisk][PeakSegDisk]] models on a
 cluster (currently only SLURM).
 
+** TODOs
+
+- modify job submission code to request multiple cpus per node, modify
+  job running code to use those cpus.
+- figure out why the same penalty is assigned to multiple jobs, and fix it.
+- do not write to DB after each penalty, because that maxes out the
+  available DB connections. Instead write a text file to a special
+  "results" directory and have a central background/daemon process
+  monitor that results directory.
+
 ** Usage (experimental)
 
 First install all R pkg dependencies, and then setup a ~/.batchtools.conf

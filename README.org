@@ -12,6 +12,7 @@ cluster (currently only SLURM).
   available DB connections. Instead write a text file to a special
   "results" directory and have a central background/daemon process
   monitor that results directory.
+- use ff instead of postgres -- apparently ff supports parallel access in different R processes to the same file.
 
 ** Usage (experimental)
 
